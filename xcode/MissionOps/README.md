@@ -31,6 +31,30 @@ relative path, and there are zero third-party dependencies.
   recovery, thruster-slew (120° slew on the RCS block: watch the limit
   cycle). Speed control 1×/10×/60×, Hold/Resume, Reset.
 
+## Remote mode — dashboard against a sim on another machine
+
+`RemoteViewModel` drives the same dashboard from a `TelemetryClient`
+instead of a local `SimEngine`, so the dashboard becomes Mini 2
+("mission control") to another machine's Mini 1 ("the spacecraft").
+
+1. On the sim machine: `swift run spacecraft-cli serve nominal --port 9001`
+2. In `Sources/MissionOps/DashboardView.swift`, change one line:
+   ```swift
+   @StateObject private var vm: RemoteViewModel = {
+       let vm = RemoteViewModel()
+       vm.host = "192.168.1.10"  // Mini 1's address on your LAN
+       vm.port = 9001
+       return vm
+   }()
+   ```
+3. ⌘R. Scenario picker, speed control, Reset, and the wheel **Kill** buttons
+   all work — they're sent as commands over the link (`loadScenario`,
+   `setSpeed`, `killWheel`).
+
+Note: this target is written against the macOS 14 SDK and hasn't been
+compile-checked on Linux (SwiftUI/SceneKit/Charts are macOS-only) — if Xcode
+reports a build error, it's a real bug; report it and it'll get fixed.
+
 ## Notes
 
 - This target is macOS-only, so it lives in its own package: the core

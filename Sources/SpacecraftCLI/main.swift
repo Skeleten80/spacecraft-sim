@@ -3,8 +3,14 @@ import SpacecraftSim
 
 func printUsage() {
     print("""
-    usage: spacecraft-cli <scenario> [--csv PATH] [--duration SECONDS]
+    usage:
+      spacecraft-cli <scenario> [--csv PATH] [--duration SECONDS]
+      spacecraft-cli serve <scenario> [--port PORT] [--speed SIM_SEC_PER_REAL_SEC]
+
       scenarios: nominal | wheel-failure | tumble | thruster-slew
+
+    serve: stream live telemetry (NDJSON over TCP) for the multi-machine
+    mission setup. --speed 1 is real-time; --speed 0 runs unthrottled.
     """)
 }
 
@@ -18,6 +24,51 @@ guard let name = args.first, !name.hasPrefix("-") else {
     exit(1)
 }
 args = args.dropFirst()
+
+// Mini 1 mode: stream the sim over TCP for remote dashboards / analysis.
+if name == "serve" {
+    guard let scenarioName = args.first, !scenarioName.hasPrefix("-") else {
+        print("serve needs a scenario")
+        printUsage()
+        exit(1)
+    }
+    var port: UInt16 = 9001
+    var speed = 1.0
+    var duration: Double?
+    let rest = Array(args.dropFirst())
+    var k = rest.startIndex
+    while k < rest.endIndex {
+        switch rest[k] {
+        case "--port":
+            rest.formIndex(after: &k)
+            if k < rest.endIndex, let p = UInt16(rest[k]) { port = p }
+        case "--speed":
+            rest.formIndex(after: &k)
+            if k < rest.endIndex, let s = Double(rest[k]) { speed = s }
+        case "--duration":
+            rest.formIndex(after: &k)
+            if k < rest.endIndex, let d = Double(rest[k]) { duration = d }
+        default:
+            break
+        }
+        rest.formIndex(after: &k)
+    }
+    guard var config = builtinScenario(String(scenarioName)) else {
+        print("unknown scenario: \(scenarioName)")
+        exit(1)
+    }
+    if let d = duration { config.duration = d }
+    do {
+        let server = TelemetryServer(config: config, port: port, speed: speed)
+        print("serving '\(config.name)' on port \(port) " +
+              "(speed: \(speed == 0 ? "unthrottled" : "\(speed)x")) …")
+        try server.serve()
+    } catch {
+        print("serve failed: \(error)")
+        exit(1)
+    }
+    exit(0)
+}
 
 var csvPath: String?
 var duration: Double?
