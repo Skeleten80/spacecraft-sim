@@ -100,6 +100,104 @@ final class WheelGeometryTests: XCTestCase {
     }
 }
 
+// MARK: - Thrusters
+
+final class ThrusterTests: XCTestCase {
+    func testTwelveThrusterBlockGeometry() {
+        let asm = ThrusterAssembly()  // 1 N, 0.5 m arms
+        XCTAssertEqual(asm.thrusters.count, 12)
+        // Thruster 0: +x torque pair. (0, h, 0) x (0, 0, F) = (h*F, 0, 0).
+        let a0 = asm.thrusters[0].torqueAuthority
+        XCTAssertEqual(a0.x, 0.5, accuracy: 1e-12)
+        XCTAssertEqual(a0.y, 0, accuracy: 1e-12)
+        XCTAssertEqual(a0.z, 0, accuracy: 1e-12)
+        // Six direction groups (+/- about each axis), two thrusters each.
+        let groups = ThrusterAssembly.group(thrusters: asm.thrusters, failed: [])
+        XCTAssertEqual(groups.count, 6)
+        for g in groups { XCTAssertEqual(g.members.count, 2) }
+    }
+
+    func testAllocationTracksCommand() {
+        // No minimum-impulse gating: achieved torque matches the command.
+        var asm = ThrusterAssembly(minOnTime: 0)
+        let cmd = Vec3(0.3, -0.2, 0.15)
+        let tau = asm.apply(desiredTorque: cmd, dt: 0.01)
+        XCTAssertEqual(tau.x, cmd.x, accuracy: 1e-9)
+        XCTAssertEqual(tau.y, cmd.y, accuracy: 1e-9)
+        XCTAssertEqual(tau.z, cmd.z, accuracy: 1e-9)
+    }
+
+    func testMinimumImpulseBitDropsSmallPulses() {
+        var asm = ThrusterAssembly()  // minOnTime = 0.02 s
+        // 1e-4 N*m -> duty 1e-4 -> 1e-6 s demanded per step: far below the bit.
+        for _ in 0..<10 {
+            let tau = asm.apply(desiredTorque: Vec3(1e-4, 0, 0), dt: 0.01)
+            XCTAssertEqual(tau.norm, 0, accuracy: 1e-15)
+        }
+        XCTAssertEqual(asm.totalFirings, 0)
+        XCTAssertEqual(asm.totalOnTime, 0, accuracy: 1e-15)
+    }
+
+    func testPulsesAccumulateAndFire() {
+        var asm = ThrusterAssembly()  // minOnTime = 0.02 s
+        // 0.4 N*m about x -> duty 0.4 per +x thruster -> 4 ms demanded per
+        // step -> the 20 ms bit is reached after 5 steps, then it fires.
+        for _ in 0..<10 {
+            _ = asm.apply(desiredTorque: Vec3(0.4, 0, 0), dt: 0.01)
+        }
+        XCTAssertGreaterThan(asm.totalFirings, 0)
+        XCTAssertGreaterThan(asm.totalOnTime, 0)
+    }
+
+    func testFailedThrusterRedundantPairStillDelivers() {
+        var asm = ThrusterAssembly(minOnTime: 0)
+        asm.fail(thruster: 0)  // one of the +x pair
+        let tau = asm.apply(desiredTorque: Vec3(0.2, 0, 0), dt: 0.01)
+        // Surviving +x thruster works at double duty: still exact.
+        XCTAssertEqual(tau.x, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(tau.y, 0, accuracy: 1e-12)
+        XCTAssertEqual(tau.z, 0, accuracy: 1e-12)
+    }
+
+    func testSaturationClamps() {
+        var asm = ThrusterAssembly(minOnTime: 0)
+        // 5 N*m about x: far beyond the 1.0 N*m per-direction authority.
+        let tau = asm.apply(desiredTorque: Vec3(5, 0, 0), dt: 0.01)
+        XCTAssertEqual(tau.x, 1.0, accuracy: 1e-9)
+    }
+}
+
+// MARK: - Sun sensor
+
+final class SunSensorTests: XCTestCase {
+    func testFOVGating() {
+        var rng = RNG(seed: 11)
+        let sun = SunSensor()  // boresight +x, 70 deg half-FOV
+        // Sun along the boresight: visible.
+        XCTAssertNotNil(sun.measure(trueAttitude: .identity,
+                                    sunInertial: Vec3(1, 0, 0), rng: &rng))
+        // Sun behind the boresight: blind.
+        XCTAssertNil(sun.measure(trueAttitude: .identity,
+                                 sunInertial: Vec3(-1, 0, 0), rng: &rng))
+        // 90 deg off boresight: outside the 70 deg FOV.
+        XCTAssertNil(sun.measure(trueAttitude: .identity,
+                                 sunInertial: Vec3(0, 1, 0), rng: &rng))
+    }
+
+    func testSunNoiseMagnitude() {
+        var rng = RNG(seed: 22)
+        let sun = SunSensor(noiseDeg: 0.25)
+        // 200 samples at 6-sigma must stay within 1.5 deg of truth.
+        let limit = cos(1.5 * deg)
+        for _ in 0..<200 {
+            let m = sun.measure(trueAttitude: .identity,
+                                sunInertial: Vec3(1, 0, 0), rng: &rng)!
+            XCTAssertGreaterThan(m.dot(Vec3(1, 0, 0)), limit)
+            XCTAssertEqual(m.norm, 1, accuracy: 1e-12)
+        }
+    }
+}
+
 // MARK: - Estimator
 
 final class EstimatorTests: XCTestCase {
@@ -125,6 +223,44 @@ final class EstimatorTests: XCTestCase {
         // Bias floor is set by gyro ARW vs. 1 Hz star updates (~0.006 deg/s);
         // assert we beat the 0.02 deg/s initial uncertainty by 2x.
         XCTAssertLessThan((ekf.bias - gyro.trueBias).norm / deg, 0.01)
+    }
+
+    func testVectorUpdateConverges() {
+        // Two independent reference vectors (sun + a cross axis) make the
+        // full attitude observable through updateVector alone.
+        var rng = RNG(seed: 555)
+        var ekf = MEKF(initialAttitude: Quat(angle: 5 * deg, axis: .unitZ),
+                       attitudeSigma: 10 * deg, biasSigma: 0.02 * deg)
+        let truth = Quat.identity
+        let sunRef = Vec3(1, 0, 0)
+        let auxRef = Vec3(0, 1, 0)
+        let sigma = 0.25 * deg
+        var gyro = Gyro()
+        let dt = 0.01
+        var t = 0.0
+        while t < 60 {
+            let m = gyro.measure(trueOmega: .zero, dt: dt, rng: &rng)
+            ekf.predict(gyro: m, dt: dt, sigmaV: gyro.arw, sigmaU: gyro.biasRW)
+            if Int(t / dt) % 50 == 0 {
+                ekf.updateVector(measuredBody: noisyBodyVec(sunRef, sigma, &rng),
+                                 referenceInertial: sunRef, sigma: sigma)
+                ekf.updateVector(measuredBody: noisyBodyVec(auxRef, sigma, &rng),
+                                 referenceInertial: auxRef, sigma: sigma)
+            }
+            t += dt
+        }
+        XCTAssertLessThan(ekf.attitude.angle(to: truth) / deg, 0.5)
+    }
+
+    /// Body-frame measurement of an inertial reference at identity attitude,
+    /// corrupted by a small random rotation (1-sigma `sigma` per axis).
+    private func noisyBodyVec(_ ref: Vec3, _ sigma: Double, _ rng: inout RNG) -> Vec3 {
+        let err = rng.gaussianVec3() * sigma
+        let angle = err.norm
+        let dq = angle > 1e-15
+            ? Quat(angle: angle, axis: err / angle)
+            : Quat.identity
+        return dq.rotate(ref).normalized()
     }
 }
 
@@ -153,6 +289,17 @@ final class ClosedLoopTests: XCTestCase {
         let r = runScenario(config)
         XCTAssertLessThan(r.finalPointErrDeg, 1.0)
         XCTAssertLessThan(r.samples.last?.omegaDegS ?? 1e9, 0.1)
+    }
+
+    func testThrusterSlewConverges() {
+        var config = builtinScenario("thruster-slew")!
+        let r = runScenario(config)
+        // On/off RCS with a 20 ms impulse bit: coarse slew, then a small
+        // limit cycle around the target instead of smooth convergence.
+        XCTAssertLessThan(r.finalPointErrDeg, 1.0)
+        XCTAssertNotNil(r.settleTime)
+        XCTAssertGreaterThan(r.thrusterFirings, 100)
+        XCTAssertGreaterThan(r.thrusterBurnTime, 1.0)
     }
 
     func testDeterminism() {

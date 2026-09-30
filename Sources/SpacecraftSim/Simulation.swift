@@ -18,6 +18,7 @@ public struct ScenarioConfig {
     public var trueGyroBias: Vec3 = .zero
     public var initialAttitudeErrorDeg: Double = 5  // estimator starts this far off
     public var failWheelAt: (time: Double, wheel: Int)?  // fault injection
+    public var actuatorMode: ActuatorMode = .wheels
 
     public init(name: String) { self.name = name }
 }
@@ -30,6 +31,8 @@ public struct TelemetrySample {
     public var biasErrDegS: Double     // gyro bias estimation error
     public var wheelSaturation: Double // max |h|/h_max
     public var torqueNorm: Double      // commanded torque magnitude (N*m)
+    public var thrusterFirings: Int = 0    // cumulative RCS pulses
+    public var thrusterBurnTime: Double = 0  // cumulative RCS burn (s)
 }
 
 public struct SimResult {
@@ -39,6 +42,8 @@ public struct SimResult {
     public var settleTime: Double?     // first t after which err stays < 0.5 deg
     public var maxOmegaDegS: Double
     public var finalBiasErrDegS: Double
+    public var thrusterFirings: Int
+    public var thrusterBurnTime: Double
 }
 
 // MARK: - Runner
@@ -66,7 +71,9 @@ public func runScenario(_ config: ScenarioConfig) -> SimResult {
         finalPointErrDeg: samples.last?.pointErrDeg ?? .nan,
         settleTime: settle,
         maxOmegaDegS: samples.map { $0.omegaDegS }.max() ?? 0,
-        finalBiasErrDegS: samples.last?.biasErrDegS ?? .nan)
+        finalBiasErrDegS: samples.last?.biasErrDegS ?? .nan,
+        thrusterFirings: engine.thrusterFirings,
+        thrusterBurnTime: engine.thrusterBurnTime)
 }
 
 // MARK: - Built-in scenarios
@@ -95,6 +102,17 @@ public func builtinScenario(_ name: String) -> ScenarioConfig? {
         c.trueGyroBias = Vec3(0.01 * deg, -0.008 * deg, 0.012 * deg)
         c.duration = 600
         return c
+    case "thruster-slew":
+        // Same controller, but the actuator is the 12-thruster RCS block.
+        // On/off valves + 20 ms minimum impulse bit: expect a coarse slew
+        // and a small limit cycle around the target, not smooth convergence.
+        var c = ScenarioConfig(name: "thruster-slew")
+        c.initialAttitude = Quat(angle: 120 * deg, axis: Vec3(1, 0.5, -0.3))
+        c.initialOmega = Vec3(1.0 * deg, -0.5 * deg, 0.8 * deg)
+        c.trueGyroBias = Vec3(0.01 * deg, -0.008 * deg, 0.012 * deg)
+        c.actuatorMode = .thrusters
+        c.duration = 600
+        return c
     default:
         return nil
     }
@@ -103,11 +121,12 @@ public func builtinScenario(_ name: String) -> ScenarioConfig? {
 // MARK: - CSV export
 
 public func writeCSV(_ result: SimResult, to path: String) throws {
-    var lines = ["t,point_err_deg,est_err_deg,omega_deg_s,bias_err_deg_s,wheel_saturation,torque_Nm"]
+    var lines = ["t,point_err_deg,est_err_deg,omega_deg_s,bias_err_deg_s,wheel_saturation,torque_Nm,thruster_firings,thruster_burn_s"]
     for s in result.samples {
-        lines.append(String(format: "%.2f,%.4f,%.4f,%.4f,%.5f,%.4f,%.6f",
+        lines.append(String(format: "%.2f,%.4f,%.4f,%.4f,%.5f,%.4f,%.6f,%d,%.2f",
                             s.t, s.pointErrDeg, s.estErrDeg, s.omegaDegS,
-                            s.biasErrDegS, s.wheelSaturation, s.torqueNorm))
+                            s.biasErrDegS, s.wheelSaturation, s.torqueNorm,
+                            s.thrusterFirings, s.thrusterBurnTime))
     }
     try lines.joined(separator: "\n").appending("\n")
         .write(toFile: path, atomically: true, encoding: .utf8)

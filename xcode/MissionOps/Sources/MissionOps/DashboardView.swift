@@ -113,6 +113,17 @@ struct DashboardView: View {
                          color: vm.engine.wheelSaturation > 0.9 ? .red : .primary)
             }
 
+            PanelSection(title: "RCS THRUSTERS")
+            HStack(spacing: 10) {
+                StatCard(title: "PULSES",
+                         value: "\(vm.engine.thrusterFirings)")
+                StatCard(title: "BURN TIME",
+                         value: String(format: "%.1f s", vm.engine.thrusterBurnTime))
+                StatCard(title: "SUN",
+                         value: vm.engine.sunValid ? "TRACK" : "BLIND",
+                         color: vm.engine.sunValid ? .green : .yellow)
+            }
+
             PanelSection(title: "REACTION WHEELS — KILL TO INJECT FAULT (N·m·s)")
             VStack(spacing: 8) {
                 ForEach(0..<4, id: \.self) { i in

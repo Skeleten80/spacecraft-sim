@@ -60,3 +60,46 @@ public struct StarTracker {
         return (dq * trueAttitude).normalized()
     }
 }
+
+// MARK: - Sun sensor
+
+/// Sun sensor: measures the sun-line unit vector in the body frame.
+///
+/// Returns nil when the sun is outside the field of view. Earth blockage /
+/// eclipse is not modeled — the sim has no orbit state — so FOV gating is
+/// the dropout mechanism here. A real spacecraft flies several heads for
+/// full-sky coverage; this is one head.
+public struct SunSensor {
+    public let boresight: Vec3     // body-frame unit vector
+    public let halfFOVRad: Double  // half-angle field of view
+    public let noiseRad: Double    // 1-sigma per-axis noise
+    public let rateHz: Double
+
+    public init(boresight: Vec3 = .unitX,
+                halfFOVDeg: Double = 70,
+                noiseDeg: Double = 0.25,
+                rateHz: Double = 2.0) {
+        self.boresight = boresight.normalized()
+        self.halfFOVRad = halfFOVDeg * .pi / 180
+        self.noiseRad = noiseDeg * .pi / 180
+        self.rateHz = rateHz
+    }
+
+    /// - Returns: measured sun unit vector in the body frame, or nil if the
+    ///   sun is outside the FOV.
+    public func measure(trueAttitude: Quat, sunInertial: Vec3, rng: inout RNG) -> Vec3? {
+        // True sun line in the body frame.
+        let sBody = trueAttitude.conjugated().rotate(sunInertial).normalized()
+        guard sBody.dot(boresight) > cos(halfFOVRad) else { return nil }
+        // Small random rotation, same construction as the star tracker.
+        let err = rng.gaussianVec3() * noiseRad
+        let angle = err.norm
+        let dq: Quat
+        if angle > 1e-15 {
+            dq = Quat(angle: angle, axis: err / angle)
+        } else {
+            dq = .identity
+        }
+        return dq.rotate(sBody).normalized()
+    }
+}

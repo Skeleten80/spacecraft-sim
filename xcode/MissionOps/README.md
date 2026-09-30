@@ -21,13 +21,15 @@ relative path, and there are zero third-party dependencies.
 - **3D attitude view** — the solid spacecraft chasing its target attitude
   (orange wireframe ghost). Drag to orbit the camera.
 - **Live telemetry** — pointing error, body rates, MEKF estimator error,
-  gyro bias error, commanded torque, wheel saturation.
+  gyro bias error, commanded torque, wheel saturation, RCS pulse count /
+  burn time, sun-sensor TRACK/BLIND.
 - **Strip charts** — pointing error and body-rate history.
 - **Failure injection** — the fun part: hit **Kill** on any reaction wheel
   mid-sim and watch the controller reallocate torque to the remaining
   three wheels and keep converging.
 - **Scenarios** — nominal, wheel-failure (scripted kill at t=45 s), tumble
-  recovery. Speed control 1×/10×/60×, Hold/Resume, Reset.
+  recovery, thruster-slew (120° slew on the RCS block: watch the limit
+  cycle). Speed control 1×/10×/60×, Hold/Resume, Reset.
 
 ## Notes
 

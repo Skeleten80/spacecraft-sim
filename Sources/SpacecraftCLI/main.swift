@@ -4,7 +4,7 @@ import SpacecraftSim
 func printUsage() {
     print("""
     usage: spacecraft-cli <scenario> [--csv PATH] [--duration SECONDS]
-      scenarios: nominal | wheel-failure | tumble
+      scenarios: nominal | wheel-failure | tumble | thruster-slew
     """)
 }
 
@@ -55,8 +55,13 @@ if let s = result.settleTime {
 }
 print("  peak body rate       : \(fmt(result.maxOmegaDegS)) deg/s")
 print("  final bias est. error: \(fmt(result.finalBiasErrDegS, 4)) deg/s")
-if let last = result.samples.last {
+if config.actuatorMode == .wheels,
+   let last = result.samples.last {
     print("  final wheel loading  : \(fmt(last.wheelSaturation * 100, 1)) % of momentum capacity")
+}
+if config.actuatorMode == .thrusters {
+    print("  thruster pulses fired: \(result.thrusterFirings)")
+    print("  total burn time      : \(fmt(result.thrusterBurnTime, 2)) s")
 }
 
 if let path = csvPath {

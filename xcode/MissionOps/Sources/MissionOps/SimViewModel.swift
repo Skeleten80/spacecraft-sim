@@ -23,7 +23,7 @@ final class SimViewModel: ObservableObject {
     @Published private(set) var errHistory: [PlotPoint] = []
     @Published private(set) var rateHistory: [RatePoint] = []
 
-    let scenarioNames = ["nominal", "wheel-failure", "tumble"]
+    let scenarioNames = ["nominal", "wheel-failure", "tumble", "thruster-slew"]
     let speeds = [1.0, 10.0, 60.0]
 
     var deg: Double { Double.pi / 180 }

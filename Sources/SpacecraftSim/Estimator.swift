@@ -128,6 +128,60 @@ public struct MEKF {
         symmetrize()
     }
 
+    // MARK: Vector update
+
+    /// Fold in a body-frame measurement of a known inertial reference vector
+    /// (e.g., sun sensor).
+    ///
+    /// A single vector leaves rotation about the reference unobservable —
+    /// pair it with a second vector or a star tracker for full attitude.
+    /// - Parameters:
+    ///   - measuredBody: measured unit vector, body frame.
+    ///   - referenceInertial: known unit vector, inertial frame.
+    ///   - sigma: 1-sigma per-axis measurement noise (rad).
+    public mutating func updateVector(measuredBody: Vec3, referenceInertial: Vec3, sigma: Double) {
+        let rHat = attitude.toMatrix()         // body -> inertial
+        let rT = rHat.transposed()             // inertial -> body
+        let zPred = rT * referenceInertial     // predicted body-frame vector
+        let y = measuredBody - zPred           // innovation
+
+        // H = [ R(q_hat)' [r x], 0 ] (3x6). Derived from the same
+        // left (inertial-frame) error convention as predict(): with
+        // q_true = dq(alpha) (x) q_hat, differentiating
+        // z = R(q_true)' r gives dz/dalpha = R(q_hat)' [r x].
+        let hAtt = rT * skew(referenceInertial)  // Mat3
+        var h = Matrix.zeros(3, 6)
+        for row in 0..<3 {
+            for col in 0..<3 { h[row, col] = hAtt[row, col] }
+        }
+
+        // S = H P H' + sigma^2 I (3x3).
+        var s = h * covariance * h.transposed()
+        let r = sigma * sigma
+        for i in 0..<3 { s[i, i] += r }
+        guard let sInv = s.inverted() else { return }
+
+        // K = P H' S^-1 (6x3).
+        let k = covariance * h.transposed() * sInv
+
+        // State correction dx = K y; attitude part applied multiplicatively
+        // on the left, exactly like the star-tracker update.
+        let yv = [y.x, y.y, y.z]
+        var dx = [Double](repeating: 0, count: 6)
+        for i in 0..<6 {
+            dx[i] = k[i, 0] * yv[0] + k[i, 1] * yv[1] + k[i, 2] * yv[2]
+        }
+        let dtheta = Vec3(dx[0], dx[1], dx[2])
+        let dq = Quat(x: 0.5 * dtheta.x, y: 0.5 * dtheta.y, z: 0.5 * dtheta.z, w: 1).normalized()
+        attitude = (dq * attitude).normalized()
+        bias = bias + Vec3(dx[3], dx[4], dx[5])
+
+        // Covariance update: P <- (I - K H) P.
+        let kh = k * h  // 6x3 * 3x6 = 6x6
+        covariance = (Matrix.identity(6) - kh) * covariance
+        symmetrize()
+    }
+
     private mutating func symmetrize() {
         // P <- (P + P') / 2 keeps roundoff from breaking symmetry.
         for r in 0..<6 {

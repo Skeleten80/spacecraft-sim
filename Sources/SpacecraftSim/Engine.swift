@@ -22,23 +22,30 @@ public final class SimEngine {
     private var sc: Spacecraft
     private var gyro: Gyro
     private let tracker = StarTracker()
+    private let sun = SunSensor()
+    private let sunInertial = Vec3(1, 0, 0)  // fixed; no orbit model, so no eclipse
     private var ekf: MEKF
     private var ctrl: AttitudeController
     private var nextLog = 0.0
     private var nextStarUpdate = 0.0
+    private var nextSunUpdate = 0.0
     private var autoFailed = false
     private let deg = Double.pi / 180
     private let starPeriod: Double
+    private let sunPeriod: Double
+    public private(set) var sunValid = false  // last sun update had the sun in FOV
 
     public init(config: ScenarioConfig) {
         self.config = config
         starPeriod = 1.0 / tracker.rateHz
+        sunPeriod = 1.0 / sun.rateHz
         rng = RNG(seed: config.seed)
 
         let inertiaVec = Vec3(12, 14, 10)  // kg*m^2, small-sat class
         sc = Spacecraft(attitude: config.initialAttitude,
                         omega: config.initialOmega,
                         inertia: Mat3(diagonal: inertiaVec))
+        sc.actuatorMode = config.actuatorMode
         gyro = Gyro(trueBias: config.trueGyroBias)
 
         // Estimator starts with a plausible (wrong) attitude: a few degrees off.
@@ -77,6 +84,18 @@ public final class SimEngine {
             let stMeas = tracker.measure(trueAttitude: sc.attitude, rng: &rng)
             ekf.update(starMeasurement: stMeas, sigmaStar: tracker.noiseRad)
             nextStarUpdate += starPeriod
+        }
+        if t >= nextSunUpdate {
+            if let sMeas = sun.measure(trueAttitude: sc.attitude,
+                                       sunInertial: sunInertial, rng: &rng) {
+                ekf.updateVector(measuredBody: sMeas,
+                                 referenceInertial: sunInertial,
+                                 sigma: sun.noiseRad)
+                sunValid = true
+            } else {
+                sunValid = false  // sun outside FOV: coast on gyro + star tracker
+            }
+            nextSunUpdate += sunPeriod
         }
 
         // Control on the *estimated* state, like flight software would.
@@ -122,6 +141,8 @@ public final class SimEngine {
     public var wheelMomenta: [Double] { sc.wheels.momentum }
     public var wheelMaxMomentum: Double { sc.wheels.maxMomentum }
     public var wheelSaturation: Double { sc.wheels.saturation }
+    public var thrusterFirings: Int { sc.thrusters.totalFirings }
+    public var thrusterBurnTime: Double { sc.thrusters.totalOnTime }
 
     // MARK: - Private
 
@@ -135,7 +156,9 @@ public final class SimEngine {
                                omegaDegS: sc.omega.norm / deg,
                                biasErrDegS: be,
                                wheelSaturation: sc.wheels.saturation,
-                               torqueNorm: lastTorque.norm)
+                               torqueNorm: lastTorque.norm,
+                               thrusterFirings: sc.thrusters.totalFirings,
+                               thrusterBurnTime: sc.thrusters.totalOnTime)
     }
 }
 
